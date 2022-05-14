@@ -13,7 +13,7 @@ import torch.fx as fx
 from torch.fx.passes.shape_prop import _extract_tensor_metadata
 from contextlib import contextmanager
 
-__all__ = ["ProxyTensor", "PythonKeyTracer", "dispatch_trace", "make_fx"]
+__all__ = ["ProxyTensor", "PythonKeyTracer", "dispatch_trace", "make_fx", "enable_strict"]
 aten = torch.ops.aten
 
 CURRENT_DECOMPOSITION_TABLE: Dict[torch._ops.OpOverload, Callable] = {}
@@ -38,22 +38,33 @@ def decompose(decomposition_table):
     finally:
         CURRENT_DECOMPOSITION_TABLE = old_decomposition_table
 
+# Checks whether we try to convert the tensor into a scalar
+IS_STRICT = True
+def enable_strict(val):
+    global IS_STRICT
+    IS_STRICT = val
 
 class ProxyTensor(torch.Tensor):
     proxy: fx.Proxy
 
     @staticmethod
-    def __new__(cls, elem, proxy):
+    def __new__(cls, elem, proxy, *, requires_grad=None):
         # Hack to deal with super().__new__ not working for sparse tensors
-        if elem.is_sparse:
-            proxy.node.meta['tensor_meta'] = {}
-            r = torch.Tensor._make_subclass(cls, elem, elem.requires_grad)
+        if elem.is_sparse or requires_grad is not None:
+            r = torch.Tensor._make_subclass(cls, elem, requires_grad)
         else:
             r = super().__new__(cls, elem)  # type: ignore[call-arg]
+
+        if elem.is_sparse:
+            proxy.node.meta['tensor_meta'] = {}
+        else:
             proxy.node.meta['tensor_meta'] = _extract_tensor_metadata(r)
         r.proxy = proxy  # type: ignore[attr-defined]
 
         return r
+
+    def __deepcopy__(self, memo):
+        return self.clone()
 
     def __repr__(self):
         with no_dispatch():
@@ -66,9 +77,10 @@ class ProxyTensor(torch.Tensor):
         func = func_overload.overloadpacket
         if func_overload in CURRENT_DECOMPOSITION_TABLE:
             return CURRENT_DECOMPOSITION_TABLE[func_overload](*args, **kwargs)
-        if func_overload == aten._local_scalar_dense.default:
+        if IS_STRICT and func_overload == aten._local_scalar_dense.default:
             raise RuntimeError("It appears that you're trying to get value out of a tracing tensor - erroring out! "
-                               "It's likely that this is caused by data-dependent control flow or similar.")
+                               "It's likely that this is caused by data-dependent control flow or similar."
+                               "Try torch.fx.experimental.proxy_tensor.enable_strict(False) to disable this check")
 
         def unwrap_proxy(e):
             return e.proxy if isinstance(e, ProxyTensor) else e
@@ -155,7 +167,7 @@ def wrap_key(f, inps):
         assert(len(flat_args) == len(flat_inps))
         for idx, arg in enumerate(flat_args):
             if isinstance(flat_inps[idx], torch.Tensor):
-                flat_args[idx] = ProxyTensor(flat_inps[idx], arg)
+                flat_args[idx] = ProxyTensor(flat_inps[idx], arg, requires_grad=flat_inps[idx].is_leaf)
             else:
                 flat_args[idx] = flat_inps[idx]
 
