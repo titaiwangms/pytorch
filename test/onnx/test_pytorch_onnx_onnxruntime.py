@@ -2683,7 +2683,9 @@ class TestONNXRuntime(onnx_test_common._TestONNXRuntime):
         x = torch.randn(1, 32, 5, 5)
         self.run_test(ReshapeModel(), x)
 
-    def _interpolate(self, x, mode, use_size, is_upsample, align_corners=False):
+    def _interpolate(
+        self, x, mode, use_size, is_upsample, align_corners=False, antialias=False
+    ):
         class MyModel(torch.nn.Module):
             __constants__ = [
                 "mode",
@@ -2694,14 +2696,16 @@ class TestONNXRuntime(onnx_test_common._TestONNXRuntime):
                 "size_array",
                 "scale_array",
                 "align_corners",
+                "antialias",
             ]
 
-            def __init__(self, mode, use_size, is_upsample, align_corners):
+            def __init__(self, mode, use_size, is_upsample, align_corners, antialias):
                 super().__init__()
                 self.mode = mode
                 self.use_size = use_size
                 self.is_upsample = is_upsample
                 self.align_corners = align_corners
+                self.antialias = antialias
                 self.scale = 2.0 if self.is_upsample else 0.5
                 self.size = 24 if self.is_upsample else 2
                 if x.dim() == 3:
@@ -2751,7 +2755,7 @@ class TestONNXRuntime(onnx_test_common._TestONNXRuntime):
                     recompute_scale_factor=False,
                 )
 
-        model = MyModel(mode, use_size, is_upsample, align_corners)
+        model = MyModel(mode, use_size, is_upsample, align_corners, antialias)
         self.run_test(model, x, atol=1e-6)
 
     def _interpolate_tests(self, is_upsample):

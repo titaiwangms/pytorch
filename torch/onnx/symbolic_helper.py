@@ -1144,6 +1144,7 @@ def __interpolate_helper(
     mode,
     align_corners,
     recompute_scale_factor,
+    antialias,
 ):
     mode = _maybe_get_const(mode, "s")
     if "linear" in mode:
@@ -1200,7 +1201,19 @@ def __interpolate_helper(
             empty_scales = g.op(
                 "Constant", value_t=torch.tensor([], dtype=torch.float32)
             )
-
+        if g.opset >= 18:
+            return g.op(
+                "Resize",
+                input,
+                empty_roi,
+                empty_scales,
+                size,
+                coordinate_transformation_mode_s=coordinate_transformation_mode,
+                cubic_coeff_a_f=-0.75,  # only valid when mode="cubic"
+                mode_s=mode,  # nearest, linear, or cubic
+                nearest_mode_s="floor",
+                antialias_i=antialias,
+            )
         return g.op(
             "Resize",
             input,
@@ -1223,6 +1236,18 @@ def __interpolate_helper(
             empty_roi = g.op("Constant", value_t=torch.tensor([], dtype=torch.float32))
 
         scales = _interpolate_get_scales(g, scale_factor, rank)
+        if g.opset >= 18:
+            return g.op(
+                "Resize",
+                input,
+                empty_roi,
+                scales,
+                coordinate_transformation_mode_s=coordinate_transformation_mode,
+                cubic_coeff_a_f=-0.75,  # only valid when mode="cubic"
+                mode_s=mode,  # nearest, linear, or cubic
+                nearest_mode_s="floor",
+                antialias_i=antialias,
+            )  # only valid when mode="nearest"
         return g.op(
             "Resize",
             input,

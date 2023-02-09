@@ -21,7 +21,7 @@ from typing import Sequence
 
 from torch import _C
 from torch.onnx import symbolic_helper
-from torch.onnx._internal import _beartype, registration
+from torch.onnx._internal import _beartype, jit_utils, registration
 
 # EDITING THIS FILE? READ THIS FIRST!
 # see Note [Edit Symbolic Files] in symbolic_helper.py
@@ -67,4 +67,30 @@ def col2im(
         dilations_i=dilation,
         pads_i=adjusted_padding,
         strides_i=stride,
+    )
+
+
+@_onnx_symbolic("aten::__interpolate")
+@symbolic_helper.quantized_args(True, False, False, False, False, False, False)
+@symbolic_helper.parse_args("v", "v", "v", "v", "v", "v", "i")
+@_beartype.beartype
+def __interpolate(
+    g: jit_utils.GraphContext,
+    input,
+    size,
+    scale_factor,
+    mode,
+    align_corners,
+    recompute_scale_factor,
+    antialias,
+):
+    return symbolic_helper.__interpolate_helper(
+        g,
+        input,
+        size,
+        scale_factor,
+        mode,
+        align_corners,
+        recompute_scale_factor,
+        antialias,
     )
