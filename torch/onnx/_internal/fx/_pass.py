@@ -10,14 +10,19 @@ import io
 import logging
 import sys
 
-from typing import Any, Callable, Optional, Tuple
+from typing import Any, Callable, Optional, Tuple, Union
 
 import torch
 import torch.fx
 from torch._subclasses import fake_tensor
+from torch.export.unflatten import InterpreterModule
 from torch.fx.experimental.proxy_tensor import maybe_disable_fake_tensor_mode
 from torch.onnx._internal import _beartype
-from torch.onnx._internal.fx import diagnostics, onnxfunction_dispatcher
+from torch.onnx._internal.fx import (
+    diagnostics,
+    onnxfunction_dispatcher,
+    type_utils as fx_type_utils,
+)
 
 
 @dataclasses.dataclass
@@ -192,7 +197,7 @@ class Transform(abc.ABC):
     diagnostic_context: diagnostics.DiagnosticContext
     """The diagnostic context for recording diagnostics."""
 
-    module: torch.fx.GraphModule
+    module: Union[torch.fx.GraphModule, fx_type_utils.TORCH_UNFLATTENED_MODULES]
     """The module to be transformed."""
 
     fake_mode: Optional[fake_tensor.FakeTensorMode]
@@ -201,7 +206,7 @@ class Transform(abc.ABC):
     def __init__(
         self,
         diagnostic_context: diagnostics.DiagnosticContext,
-        module: torch.fx.GraphModule,
+        module: Union[torch.fx.GraphModule, fx_type_utils.TORCH_UNFLATTENED_MODULES],
     ):
         """Initialize the transform.
 
@@ -234,14 +239,18 @@ class Transform(abc.ABC):
         )
 
     @abc.abstractmethod
-    def _run(self, *args, **kwargs) -> torch.fx.GraphModule:
+    def _run(
+        self, *args, **kwargs
+    ) -> Union[torch.fx.GraphModule, fx_type_utils.TORCH_UNFLATTENED_MODULES]:
         ...
 
     @diagnostics.diagnose_call(
         diagnostics.rules.fx_pass,
         diagnostic_message_formatter=_transform_diagnose_call_message_formatter,
     )
-    def run(self, *args, **kwargs) -> torch.fx.GraphModule:
+    def run(
+        self, *args, **kwargs
+    ) -> Union[torch.fx.GraphModule, fx_type_utils.TORCH_UNFLATTENED_MODULES]:
         """Run the transform on `self.module`.
 
         Note that this method may or may not mutate `self.module`, and the returned
@@ -264,7 +273,13 @@ class Transform(abc.ABC):
         graph_diff_log_level = logging.DEBUG
         if diagnostic.logger.isEnabledFor(graph_diff_log_level):
             # Cannot use LazyString because the graph may have been mutated at evaluation time.
-            old_readable_graph = self.module.print_readable(print_output=False)
+            # TODO: torch.export.UnflattenedModule does not have `print_readable` method.
+            if isinstance(self.module, torch.fx.GraphModule):
+                old_readable_graph = self.module.print_readable(print_output=False)
+            elif isinstance(self.module, InterpreterModule):
+                old_readable_graph = self.module.graph_module.print_readable(
+                    print_output=False
+                )
             old_tabular = maybe_fx_graph_tabular(self.module.graph)
         else:
             # Set to empty string to avoid unbound warning. This value should never be
@@ -276,18 +291,29 @@ class Transform(abc.ABC):
 
         # Gather graph information after transform.
         if diagnostic.logger.isEnabledFor(graph_diff_log_level):
-            new_readable_graph = module.print_readable(print_output=False)
-            new_tabular = maybe_fx_graph_tabular(module.graph)
-
-            with diagnostic.log_section(graph_diff_log_level, "Graph diff:"):
-                diagnostic.log(
-                    graph_diff_log_level,
-                    "```\n%s\n```",
-                    diagnostics.LazyString(
-                        _unified_diff, old_readable_graph, new_readable_graph
-                    ),
+            if isinstance(module, torch.fx.GraphModule):
+                new_readable_graph = module.print_readable(print_output=False)
+                with diagnostic.log_section(graph_diff_log_level, "Graph diff:"):
+                    diagnostic.log(
+                        graph_diff_log_level,
+                        "```\n%s\n```",
+                        diagnostics.LazyString(
+                            _unified_diff, old_readable_graph, new_readable_graph
+                        ),
+                    )
+            elif isinstance(module, InterpreterModule):
+                new_readable_graph = module.graph_module.print_readable(
+                    print_output=False
                 )
-
+                with diagnostic.log_section(graph_diff_log_level, "Graph diff:"):
+                    diagnostic.log(
+                        graph_diff_log_level,
+                        "```\n%s\n```",
+                        diagnostics.LazyString(
+                            _unified_diff, old_readable_graph, new_readable_graph
+                        ),
+                    )
+            new_tabular = maybe_fx_graph_tabular(module.graph)
             with diagnostic.log_section(graph_diff_log_level, "Tabular diff:"):
                 if old_tabular is None or new_tabular is None:
                     diagnostic.log(
@@ -313,7 +339,7 @@ class Analysis(abc.ABC):
     def __init__(
         self,
         diagnostic_context: diagnostics.DiagnosticContext,
-        module: torch.fx.GraphModule,
+        module: Union[torch.fx.GraphModule, torch.export.UnflattenedModule],
         onnxfunction_dispatcher: onnxfunction_dispatcher.OnnxFunctionDispatcher,
     ):
         self.diagnostic_context = diagnostic_context

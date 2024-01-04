@@ -20,9 +20,13 @@ import onnx
 
 import torch
 from torch._subclasses import fake_tensor
+from torch.export.unflatten import InterpreterModule
+
 
 if TYPE_CHECKING:
     import onnx.defs.OpSchema.AttrType  # type: ignore[import]
+
+TORCH_UNFLATTENED_MODULES = Union[torch.export.UnflattenedModule, InterpreterModule]
 
 
 # Enable both TorchScriptTensor and torch.Tensor to be tested

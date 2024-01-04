@@ -1,6 +1,6 @@
 from .decomp import Decompose
 from .functionalization import Functionalize, RemoveInputMutation
-from .modularization import Modularize
+from .modularization import Modularize, RenameModuleAndAttributeNames
 from .readability import RestoreParameterAndBufferNames
 from .type_promotion import InsertTypePromotion
 from .virtualization import MovePlaceholderToFront, ReplaceGetAttrWithPlaceholder
@@ -14,4 +14,5 @@ __all__ = [
     "RemoveInputMutation",
     "RestoreParameterAndBufferNames",
     "ReplaceGetAttrWithPlaceholder",
+    "RenameModuleAndAttributeNames",
 ]

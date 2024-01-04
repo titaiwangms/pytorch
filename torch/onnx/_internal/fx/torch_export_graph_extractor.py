@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Mapping, Optional, Sequence, TYPE_CHECKING, Union
+from typing import Any, Callable, Mapping, Optional, Sequence, TYPE_CHECKING
 
 import torch._dynamo
 import torch.fx
@@ -50,6 +50,8 @@ class TorchExport(exporter.FXGraphExtractor):
         self.input_adapter.append_step(
             io_adapter.FlattenInputWithTreeSpecValidationInputStep()
         )
+
+        # TODO: Remove when https://github.com/pytorch/pytorch/issues/116914 is done
         self.input_adapter.append_step(
             io_adapter.PrependParamsBuffersConstantAotAutogradInputStep()
         )
@@ -84,9 +86,10 @@ class TorchExport(exporter.FXGraphExtractor):
             io_adapter.ConvertComplexToRealRepresentationOutputStep()
         )
 
-        options.fx_tracer.output_adapter.append_step(
-            io_adapter.PrependParamsAndBuffersAotAutogradOutputStep()
-        )
+        # TODO: This should be enabled if https://github.com/pytorch/pytorch/issues/117893 is fixed.
+        # options.fx_tracer.output_adapter.append_step(
+        #     io_adapter.PrependParamsAndBuffersAotAutogradOutputStep()
+        # )
 
         # TODO: https://github.com/pytorch/pytorch/issues/114628
         # run_decomposition generates a new graph module with decomposed ops.
@@ -100,10 +103,10 @@ class TorchExport(exporter.FXGraphExtractor):
     def pre_export_passes(
         self,
         options: exporter.ResolvedExportOptions,
-        original_model: Union[torch.nn.Module, Callable],
+        original_model: Callable,  # TODO: ExportedProgram annotatyion is blocked by beartype
         fx_module: torch.fx.GraphModule,
         fx_module_args: Sequence[Any],
-    ):
+    ) -> torch.export.UnflattenedModule:
         # TODO: Import here to prevent circular dependency
         from torch.onnx._internal.fx import analysis, passes
 
@@ -113,13 +116,22 @@ class TorchExport(exporter.FXGraphExtractor):
         # Insert type casts explicitly where needed.
         fx_module = passes.InsertTypePromotion(diagnostic_context, fx_module).run()
 
+        # TODO: To keep the processed graph module, we have to replace the original
+        # before unflatten API.
+        original_model._graph_module = fx_module  # type: ignore[attr-defined]
+
+        # See [NOTE: Unflatten ordering]
+        unflatten_module: torch.export.UnflattenedModule = torch.export.unflatten(
+            original_model  # type: ignore[arg-type]
+        )
+
+        unflatten_module = passes.RenameModuleAndAttributeNames(
+            diagnostic_context,
+            unflatten_module,  # type: ignore[attr-defined]
+        ).run()
+
         analysis.UnsupportedFxNodesAnalysis(
-            diagnostic_context, fx_module, options.onnxfunction_dispatcher
+            diagnostic_context, unflatten_module, options.onnxfunction_dispatcher
         ).analyze(infra.levels.ERROR)
 
-        # TODO: Disabled this pass until "Segmentation fault (core dumped)" is fixed
-        # This operation should be invoked as the last pre export pass.
-        # See [NOTE: Modularize pass ordering]
-        # fx_module = passes.Modularize(diagnostic_context, fx_module).run()
-
-        return fx_module
+        return unflatten_module

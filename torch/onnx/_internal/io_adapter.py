@@ -608,12 +608,12 @@ class PrependParamsBuffersConstantAotAutogradInputStep(InputAdaptStep):
         Returns:
             A tuple of the model args and kwargs.
         """
-        ordered_params = tuple(
-            model.state_dict[name] for name in model.graph_signature.parameters  # type: ignore[union-attr,index]
-        )
-        ordered_buffers = tuple(
-            model.state_dict[name] for name in model.graph_signature.buffers  # type: ignore[union-attr,index]
-        )
+        # ordered_params = tuple(
+        #     model.state_dict[name] for name in model.graph_signature.parameters  # type: ignore[union-attr,index]
+        # )
+        # ordered_buffers = tuple(
+        #     model.state_dict[name] for name in model.graph_signature.buffers  # type: ignore[union-attr,index]
+        # )
         ordered_constant_tensors = tuple(
             getattr(model.module(), name) for name in model.graph_signature.lifted_tensor_constants  # type: ignore[union-attr,index]
         )
@@ -621,8 +621,8 @@ class PrependParamsBuffersConstantAotAutogradInputStep(InputAdaptStep):
         # NOTE: calling convention is first params, then buffers, then args as user supplied them.
         # See: torch/_functorch/aot_autograd.py#L1034
         updated_args = (
-            *ordered_params,
-            *ordered_buffers,
+            # *ordered_params,
+            # *ordered_buffers,
             *ordered_constant_tensors,
             *model_args,
         )

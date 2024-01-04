@@ -14,6 +14,9 @@ from onnxscript.function_libs.torch_lib import (  # type: ignore[import]
 
 import torch
 import torch.fx
+from torch.export.unflatten import InterpreterModule
+
+# TODO: Remove this once we have a better way to import InterpreterModule
 from torch.onnx import _type_utils as jit_type_utils
 from torch.onnx._internal import _beartype
 from torch.onnx._internal.fx import (
@@ -41,7 +44,9 @@ def _fx_node_to_onnx_message_formatter(
 def _fx_graph_to_onnx_message_formatter(
     fn: Callable,
     self,
-    fx_graph_module: torch.fx.GraphModule,
+    fx_graph_module: Union[
+        torch.fx.GraphModule, fx_type_utils.TORCH_UNFLATTENED_MODULES
+    ],
     *args,
     **kwargs,
 ) -> str:
@@ -418,7 +423,9 @@ class FxOnnxInterpreter:
     def run_node(
         self,
         node,
-        fx_graph_module: torch.fx.GraphModule,
+        fx_graph_module: Union[
+            torch.fx.GraphModule, fx_type_utils.TORCH_UNFLATTENED_MODULES
+        ],
         onnxfunction_dispatcher: onnxfunction_dispatcher.OnnxFunctionDispatcher,
         op_level_debug: bool,
         onnxscript_graph: onnxscript_graph_building.TorchScriptGraph,
@@ -499,7 +506,9 @@ class FxOnnxInterpreter:
     )
     def run(
         self,
-        fx_graph_module: torch.fx.GraphModule,
+        fx_graph_module: Union[
+            torch.fx.GraphModule, fx_type_utils.TORCH_UNFLATTENED_MODULES
+        ],
         onnxfunction_dispatcher: onnxfunction_dispatcher.OnnxFunctionDispatcher,
         op_level_debug: bool,
         parent_onnxscript_graph: Optional[
@@ -518,27 +527,47 @@ class FxOnnxInterpreter:
         """
         diagnostic = self.diagnostic_context.inflight_diagnostic()
         with diagnostic.log_section(logging.DEBUG, "FX Graph:"):
-            diagnostic.debug(
-                "```\n%s\n```",
-                diagnostics.LazyString(fx_graph_module.print_readable, False),
-            )
+            # TODO(titaiwang): UnflattenedModule doesn't have print_readable method.
+            if isinstance(fx_graph_module, torch.fx.GraphModule):
+                diagnostic.debug(
+                    "```\n%s\n```",
+                    diagnostics.LazyString(fx_graph_module.print_readable, False),
+                )
+            elif isinstance(fx_graph_module, InterpreterModule):
+                diagnostic.debug(
+                    "```\n%s\n```",
+                    diagnostics.LazyString(
+                        fx_graph_module.graph_module.print_readable, False
+                    ),
+                )
 
         if parent_onnxscript_graph is not None:
             # If parent_onnxscript_graph is provided, we assume fx_graph_module is a
             # submodule representing a forward call of an nn.Module.
             # Compose package and version where the nn.Module is defined as domain name
             # for the local function.
+            if isinstance(fx_graph_module, torch.fx.GraphModule):
+                onnx_meta: Optional[
+                    _pass.GraphModuleOnnxMeta
+                ] = fx_graph_module.meta.get("onnx")
+                if onnx_meta is None:
+                    raise RuntimeError(
+                        f"ONNX meta is not found in submodule {fx_graph_module._get_name()}. "
+                        f"Only submodules produced by `Modularize` pass is supported in ONNX export."
+                    )
 
-            onnx_meta: Optional[_pass.GraphModuleOnnxMeta] = fx_graph_module.meta.get(
-                "onnx"
-            )
-            if onnx_meta is None:
-                raise RuntimeError(
-                    f"ONNX meta is not found in submodule {fx_graph_module._get_name()}. "
-                    f"Only submodules produced by `Modularize` pass is supported in ONNX export."
+                onnx_domain = onnx_meta.package_info.to_onnx_domain_string()
+            elif isinstance(fx_graph_module, fx_type_utils.TORCH_UNFLATTENED_MODULES):  # type: ignore[arg-type]
+                # TODO: The class is re-written to torch.export.UnflattenModule, so
+                # we can't access the original module information.
+                package_info = _pass.PackageInfo.from_python_class(
+                    fx_graph_module.__class__
                 )
-
-            onnx_domain = onnx_meta.package_info.to_onnx_domain_string()
+                onnx_domain = package_info.to_onnx_domain_string()
+            else:
+                raise RuntimeError(
+                    f"Unsupported type of fx_graph_module: {type(fx_graph_module)}"
+                )
         else:
             # Leave as default domain name for the root module.
             onnx_domain = None
@@ -658,7 +687,9 @@ class FxOnnxInterpreter:
         ],
         onnxfunction_dispatcher: onnxfunction_dispatcher.OnnxFunctionDispatcher,
         op_level_debug: bool,
-        fx_graph_module: torch.fx.GraphModule,
+        fx_graph_module: Union[
+            torch.fx.GraphModule, fx_type_utils.TORCH_UNFLATTENED_MODULES
+        ],
     ):
         # aten ops and other stateless functions.
         if node.target == operator.getitem and isinstance(
@@ -774,7 +805,9 @@ class FxOnnxInterpreter:
             ],
         ],
         tracer: onnxscript_graph_building.TorchScriptTracingEvaluator,
-        root_fx_graph_module: torch.fx.GraphModule,
+        root_fx_graph_module: Union[
+            torch.fx.GraphModule, fx_type_utils.TORCH_UNFLATTENED_MODULES
+        ],
         onnxfunction_dispatcher: onnxfunction_dispatcher.OnnxFunctionDispatcher,
         op_level_debug: bool,
     ) -> None:
@@ -802,10 +835,6 @@ class FxOnnxInterpreter:
         ), f"node.target must be a str, not {type(node.target)} for node {node}."
 
         sub_module = root_fx_graph_module.get_submodule(node.target)
-
-        assert isinstance(
-            sub_module, torch.fx.GraphModule
-        ), f"sub_module must be a torch.fx.GraphModule, not {type(sub_module)} for node {node}."
 
         sub_onnxscript_graph = self.run(
             sub_module, onnxfunction_dispatcher, op_level_debug, parent_onnxscript_graph
@@ -835,6 +864,7 @@ class FxOnnxInterpreter:
         ), f"Unexpected outputs type {type(outputs)} for node {node}."
 
         _fill_tensor_shape_type(outputs, node.name, node.meta["val"])
+
         fx_name_to_onnxscript_value[node.name] = outputs
 
         # Skip op_level_validation for call_module. Subgraph nodes are validated individually.
@@ -851,7 +881,9 @@ class FxOnnxInterpreter:
                 Tuple[onnxscript_graph_building.TorchScriptTensor, ...],
             ],
         ],
-        fx_graph_module: torch.fx.GraphModule,
+        fx_graph_module: Union[
+            torch.fx.GraphModule, fx_type_utils.TORCH_UNFLATTENED_MODULES
+        ],
     ):
         # TODO: Constant tensors and buffer/weights are both categorized into `get_attr`,
         # but they are different to ONNX. We need to distinguish them.

@@ -1383,7 +1383,7 @@ class _TypePromotionInterpreter(torch.fx.Interpreter):
     def __init__(
         self,
         diagnostic_context: diagnostics.DiagnosticContext,
-        module: torch.fx.GraphModule,
+        module: Union[torch.fx.GraphModule, torch.export.UnflattenedModule],
         type_promotion_table: TypePromotionTable,
     ):
         super().__init__(module)
@@ -1689,7 +1689,7 @@ class InsertTypePromotion(_pass.Transform):
     def __init__(
         self,
         diagnostic_context: diagnostics.DiagnosticContext,
-        module: torch.fx.GraphModule,
+        module: Union[torch.fx.GraphModule, torch.export.UnflattenedModule],
         type_promotion_table: Optional[TypePromotionTable] = None,
     ):
         super().__init__(diagnostic_context, module)
@@ -1725,7 +1725,9 @@ class InsertTypePromotion(_pass.Transform):
         return fake_args
 
     @_beartype.beartype
-    def _run(self, *args, **kwargs) -> torch.fx.GraphModule:
+    def _run(
+        self, *args, **kwargs
+    ) -> Union[torch.fx.GraphModule, fx_type_utils.TORCH_UNFLATTENED_MODULES]:
         assert not args, (
             "`InsertTypePromotion` deduces symbolic fake arguments from the graph. "
             "It does not accept concrete arguments as input because this pass requires "

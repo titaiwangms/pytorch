@@ -1125,7 +1125,7 @@ class TestFxToOnnxFakeTensorWithOnnxRuntime(onnx_test_common._TestONNXRuntime):
         reason="Dynamic shape check is not expected for exported program in this test suite.",
         model_type=pytorch_test_common.TorchModelType.TORCH_EXPORT_EXPORTEDPROGRAM,
     )
-    @pytorch_test_common.xfail_if_model_type_is_not_exportedprogram(
+    @pytorch_test_common.xfail(
         error_message="Expected 4 inputs, got 2",
         reason="https://github.com/pytorch/pytorch/issues/115745",
     )
@@ -1201,6 +1201,10 @@ class TestFxToOnnxFakeTensorWithOnnxRuntime(onnx_test_common._TestONNXRuntime):
     @pytorch_test_common.skip_dynamic_fx_test(
         reason="Dynamic shape check is not expected for exported program in this test suite.",
         model_type=pytorch_test_common.TorchModelType.TORCH_EXPORT_EXPORTEDPROGRAM,
+    )
+    @pytorch_test_common.xfail_if_model_type_is_exportedprogram(
+        error_message="[ShapeInferenceError] Inference error(s)",
+        reason="Real reason: torch.export.unflatten doesn't support huggingface google T5.",
     )
     def test_fake_tensor_mode_huggingface_google_t5(self):
         config = transformers.T5Config(
@@ -1371,7 +1375,7 @@ class TestFxToOnnxFakeTensorWithOnnxRuntime(onnx_test_common._TestONNXRuntime):
         reason="Dynamic shape check is not expected for exported program in this test suite.",
         model_type=pytorch_test_common.TorchModelType.TORCH_EXPORT_EXPORTEDPROGRAM,
     )
-    @pytorch_test_common.xfail_if_model_type_is_not_exportedprogram(
+    @pytorch_test_common.xfail(
         error_message="Expected 5 inputs, got 3",
         reason="https://github.com/pytorch/pytorch/issues/115745",
     )
@@ -1420,6 +1424,10 @@ class TestFxToOnnxFakeTensorWithOnnxRuntime(onnx_test_common._TestONNXRuntime):
     )
     @pytorch_test_common.xfail_if_model_type_is_not_exportedprogram(
         error_message="Expected 9 inputs, got 3",
+        reason="https://github.com/pytorch/pytorch/issues/115745",
+    )
+    @pytorch_test_common.xfail_if_model_type_is_exportedprogram(
+        error_message="Expected 11 inputs, got 5",
         reason="https://github.com/pytorch/pytorch/issues/115745",
     )
     def test_fake_tensor_mode_huggingface_databricks_dolly_v2_3b(self):

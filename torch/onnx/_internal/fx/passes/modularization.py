@@ -24,7 +24,7 @@ import torch
 import torch.fx
 from torch.onnx._internal import _beartype
 
-from torch.onnx._internal.fx import _pass
+from torch.onnx._internal.fx import _pass, diagnostics, type_utils as fx_type_utils
 from torch.utils import _pytree as pytree
 
 _FX_TRACER_NN_MODULE_META_TYPE = Tuple[str, type]
@@ -830,3 +830,103 @@ class Modularize(_pass.Transform):
         for fx_node in self.module.graph.nodes:
             root_module_node.add_leaf_node(_LeafNode(fx_node))
         return root_module_node.build_module({})
+
+
+class RenameModuleAndAttributeNames(_pass.Transform):
+    """Rename duplicated attributes in the graph.
+
+    In UnflattenedModule, each submodules could share the same
+    attribute name. This pass renames the duplicated attribute names
+    to avoid name conflict.
+
+    """
+
+    def __init__(
+        self,
+        diagnostic_context: diagnostics.DiagnosticContext,
+        module: fx_type_utils.TORCH_UNFLATTENED_MODULES,
+    ):
+        super().__init__(diagnostic_context, module)
+        self.diagnostic_context = diagnostic_context
+        self.module = module
+
+    def _run(
+        self,
+    ) -> Union[torch.fx.GraphModule, fx_type_utils.TORCH_UNFLATTENED_MODULES]:
+        self._rename_duplicated_attribute_names(graph_module=self.module, used_names={})
+        return self.module
+
+    @_beartype.beartype
+    def _rename_duplicated_attribute_names(
+        self,
+        graph_module: fx_type_utils.TORCH_UNFLATTENED_MODULES,
+        used_names: Dict[str, int],
+        module_name: Optional[str] = None,
+    ) -> None:
+        """Recursively rename duplicated attribute names in the graph."""
+        graph = graph_module.graph
+        all_nodes = list(graph_module.graph.nodes)
+        for node in all_nodes:
+            if node.op == "get_attr":
+                if module_name is None:
+                    # The root doesn't need to be renamed
+                    continue
+                full_name = f"{module_name}_{node.target}"
+                # Attribute name cannot contain "."
+                full_name = full_name.replace(".", "_")
+                # NOTE: graph change - rename the node inside the graph
+                with graph.inserting_after(node):
+                    rename_node = graph.create_node("get_attr", full_name)
+                node.replace_all_uses_with(rename_node, propagate_meta=True)
+                graph.erase_node(node)
+                # TODO: UnflattenedModule doesn't support recompile(), so we need to manually
+                # rename the attribute here. This should be removed once UnflattenedModule
+                # supports recompile().
+                node_target = node.target
+                attr = getattr(graph_module, node_target)
+                setattr(graph_module, full_name, attr)
+                delattr(graph_module, node_target)
+            if node.op == "call_module":
+                if module_name is None:
+                    full_name = node.target
+                else:
+                    full_name = f"{module_name}_{node.target}"
+                full_name = full_name.replace(".", "_")
+                # TODO: submodule could be sharing the same name.
+                # However, we should find a less hacky way to rename the submodule.
+                submodule = graph_module.get_submodule(node.target)
+                unique_full_name = self._get_unique_full_name(full_name, used_names)
+                # TODO(titaiwang): Remove old submodule name from graph_module?
+                # TODO(titaiwang): How to effectively update graph and its graph module?
+                _add_submodule(graph_module, unique_full_name, submodule)
+                graph.owning_module = graph_module
+                # rename the node inside the graph
+                with graph.inserting_after(node):
+                    rename_node = graph.call_module(
+                        unique_full_name, node.args, node.kwargs
+                    )
+                node.replace_all_uses_with(rename_node, propagate_meta=True)
+                graph.erase_node(node)
+                self._rename_duplicated_attribute_names(
+                    submodule, used_names, full_name
+                )
+        return
+
+    def _get_unique_full_name(self, full_name: str, used_names: Dict[str, int]) -> str:
+        """Get a unique full name for the attribute."""
+        used_names.setdefault(full_name, 0)
+        used_names[full_name] += 1
+        return f"{full_name}_{used_names[full_name]}"
+
+
+def _add_submodule(mod: torch.nn.Module, target: str, module_to_add: torch.nn.Module):
+    *prefix, field = target.split(".")
+    for item in prefix:
+        submod = getattr(mod, item, None)
+        if submod is None:
+            submod = torch.nn.Module()
+            setattr(mod, item, submod)
+        if not isinstance(submod, torch.nn.Module):
+            return False
+        mod = submod
+    mod.add_module(field, module_to_add)

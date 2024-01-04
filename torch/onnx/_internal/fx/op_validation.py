@@ -49,7 +49,9 @@ def validate_op_between_ort_torch(
     symbolic_fn: Union[onnxscript.OnnxFunction, onnxscript.TracedOnnxFunction],
     fx_args: List[fx_type_utils.Argument],
     fx_kwargs: Dict[str, fx_type_utils.Argument],
-    fx_graph_module: torch.fx.GraphModule,
+    fx_graph_module: Union[
+        torch.fx.GraphModule, fx_type_utils.TORCH_UNFLATTENED_MODULES
+    ],
 ):
     """Validate the op between ONNX Runtime and PyTorch.
 
@@ -241,7 +243,10 @@ def generate_random_tensors(shape: torch.Size, dtype: torch.dtype):
 
 @_beartype.beartype
 def _fx_args_to_torch_args(
-    fx_args: List[fx_type_utils.Argument], fx_graph_module: torch.fx.GraphModule
+    fx_args: List[fx_type_utils.Argument],
+    fx_graph_module: Union[
+        torch.fx.GraphModule, fx_type_utils.TORCH_UNFLATTENED_MODULES
+    ],
 ) -> List[fx_type_utils.Argument]:
     """Recursively convert fx args to torch args"""
     wrapped_args: List[fx_type_utils.Argument] = []
@@ -286,7 +291,9 @@ def _fx_args_to_torch_args(
 def _wrap_fx_args_as_torch_args(
     fx_args: List[fx_type_utils.Argument],
     fx_kwargs: Dict[str, fx_type_utils.Argument],
-    fx_graph_module: torch.fx.GraphModule,
+    fx_graph_module: Union[
+        torch.fx.GraphModule, fx_type_utils.TORCH_UNFLATTENED_MODULES
+    ],
 ) -> Tuple[List[fx_type_utils.Argument], Dict[str, fx_type_utils.Argument]]:
     """Prepare torch format args and kwargs for op-level validation by using fake tensor to create real tensor to feed in ops"""
 

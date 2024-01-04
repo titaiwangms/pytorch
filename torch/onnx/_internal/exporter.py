@@ -1030,6 +1030,9 @@ class ONNXProgram:
                 "",  # When initializers >2GB, must be in the same folder as the model
                 tuple(_model_state_dict_files),
                 self.model_proto,
+                rename_initializer=isinstance(
+                    self._model_torch, torch.export.ExportedProgram
+                ),
             )
         else:
             if isinstance(destination, str):

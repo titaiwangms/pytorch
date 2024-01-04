@@ -12,6 +12,7 @@ from torch.utils import _pytree as torch_pytree
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import onnx_test_common
+import pytorch_test_common
 
 
 class TestFxToOnnxWithOnnxRuntime(onnx_test_common._TestONNXRuntime):
@@ -105,6 +106,10 @@ class TestFxToOnnxWithOnnxRuntime(onnx_test_common._TestONNXRuntime):
             exported_program, onnx_program, input_args=(additional_tensor_input, 5)
         )
 
+    @pytorch_test_common.xfail(
+        error_message="Unsupported OverloadPacket: aten.copy_, aten.sym_size is the only allowed OverloadPacket!",
+        reason="https://github.com/pytorch/pytorch/issues/117893",
+    )
     def test_onnx_program_supports_retraced_graph(self):
         class Bar(torch.nn.Module):
             def __init__(self):
@@ -202,6 +207,10 @@ class TestFxToOnnxWithOnnxRuntime(onnx_test_common._TestONNXRuntime):
             exported_program, onnx_program, test_inputs, test_kwargs
         )
 
+    @pytorch_test_common.xfail(
+        error_message="Unsupported OverloadPacket: aten.copy_, aten.sym_size is the only allowed OverloadPacket!",
+        reason="https://github.com/pytorch/pytorch/issues/117893",
+    )
     def test_exported_program_as_input_lifting_buffers_mutation(self):
         for persistent in (True, False):
 
@@ -307,6 +316,74 @@ class TestFxToOnnxWithOnnxRuntime(onnx_test_common._TestONNXRuntime):
         self._compare_onnx_and_torch_exported_program(
             exported_program, onnx_program, input_args=(), input_kwargs=inputs
         )
+
+    def test_unflatten_module_succeeds_when_a_submodule_is_called_multiple_times(
+        self,
+    ):
+        class TestModule(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.relu = torch.nn.ReLU()
+
+            def forward(self, x, y):
+                out = x + y
+                out = self.relu(out)
+                out = out + x
+                out = self.relu(out)
+                return out
+
+        exported_program = torch.export.export(
+            TestModule(), args=(torch.randn(3), torch.randn(3))
+        )
+        onnx_program = torch.onnx.dynamo_export(
+            exported_program, torch.randn(3), torch.randn(3)
+        )
+        model_proto = onnx_program.model_proto
+        function_proto_names = [function.name for function in model_proto.functions]
+
+        # Module as function
+        self.assertIn("InterpreterModule_relu_1", function_proto_names)
+        self.assertIn("InterpreterModule_relu_2", function_proto_names)
+
+    def test_unflatten_module_succeeds_when_a_submodule_is_called_from_multiple_layers(
+        self,
+    ):
+        # Minified repro from basic_gnn_edgecnn.
+        class InnerModule(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.relu = torch.nn.ReLU()
+
+            def forward(self, x):
+                return self.relu(x)
+
+        class TestModule(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.inner_module = InnerModule()
+
+            def forward(self, x, y):
+                out = x + y
+                out = self.inner_module(out)
+                out = out + x
+                out = self.inner_module.relu(out)
+                return out
+
+        exported_program = torch.export.export(
+            TestModule(), args=(torch.randn(3), torch.randn(3))
+        )
+        onnx_program = torch.onnx.dynamo_export(
+            exported_program, torch.randn(3), torch.randn(3)
+        )
+        model_proto = onnx_program.model_proto
+        function_proto_names = [function.name for function in model_proto.functions]
+
+        # Module as function
+        self.assertIn("InterpreterModule_inner_module_1", function_proto_names)
+        # Use the function inside the module
+        self.assertIn("InterpreterModule_inner_module_relu_1", function_proto_names)
+        # Nested module as function
+        self.assertIn("InterpreterModule_inner_module_relu_2", function_proto_names)
 
 
 if __name__ == "__main__":
