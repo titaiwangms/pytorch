@@ -551,6 +551,42 @@ class _OnnxSchemaChecker:
         """
         return self._matching_score
 
+    def _function_matches_device_specific(
+        self,
+        diagnostic: diagnostics.Diagnostic,
+        args: Sequence[
+            Optional[
+                Union[fx_type_utils.TensorLike, str, int, float, bool, list, complex]
+            ]
+        ],
+        kwargs: Dict[str, fx_type_utils.Argument],
+    ) -> bool:
+        """Check if the function matches the device-specific requirement."""
+        print(f"converter training: {kwargs}")
+        return True
+        arg_device = None
+        for arg in args:
+            if (arg_device := _find_onnx_data_device(arg)) is not None:
+                break
+
+        function_required_device = fx_type_utils.get_onnx_function_required_device(
+            self.onnxfunction.name
+        )
+        if (
+            function_required_device is not None
+            and arg_device.type != function_required_device.type
+        ):
+            with diagnostic.log_section(
+                logging.INFO, "Failed: device specific mismatch!"
+            ):
+                diagnostic.info(
+                    "Actual %s vs\nExpected %s",
+                    arg_device,
+                    function_required_device,
+                )
+            return False
+        return True
+
     @_beartype.beartype
     def perfect_match_inputs(
         self,
@@ -600,12 +636,18 @@ class _OnnxSchemaChecker:
                 "%s",
                 diagnostics.LazyString(diagnostics.format_argument, self.onnxfunction),
             )
+            is_perfect_match = True
+            # NOTE: 0. If
+            if not self._function_matches_device_specific(
+                diagnostic, function_inputs, function_attributes
+            ):
+                return False
+
             # NOTE: 1. Check if the input number and attribute names match the
             # OpSchema. If it's not, we know the function is not eligible to be a perfect
             # match, nor a nearest match.
             # We use is_perfect_match to postpone the return value to the end
             # of the function, as we want to log all the mismatch info.
-            is_perfect_match = True
             if len(function_inputs) != len(self.op_schema.inputs):
                 with diagnostic.log_section(
                     logging.INFO, "Failed: input number mismatch!"
@@ -904,3 +946,20 @@ def _find_onnx_data_type(
         return set()
 
     raise RuntimeError(f"Unknown input type from input: {torch_input}")
+
+
+@_beartype.beartype
+def _find_onnx_data_device(
+    torch_input: Optional[
+        Union[fx_type_utils.TensorLike, str, int, float, bool, list, tuple, complex]
+    ]
+) -> torch.device | None:
+    """Convert inputs data type from torch acceptable dtype to the compatible onnx dtype string."""
+    if isinstance(torch_input, fx_type_utils.TensorLike):
+        return torch_input.device
+    if isinstance(torch_input, (list, tuple)) and torch_input:  # [Tensor, Tensor]
+        the_first_non_none_item = next(
+            (item for item in torch_input if item is not None), None
+        )
+        return _find_onnx_data_device(the_first_non_none_item)
+    return None

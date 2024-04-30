@@ -177,6 +177,14 @@ def _retrieve_or_adapt_input_to_graph_set(
             output = onnxscript.opset18.Concat(*sequence_mixed_elements, axis=0)  # type: ignore[type-var]
         output.dtype = torch.int64  # type: ignore[union-attr]
         output.shape = [len(sequence_mixed_elements)]  # type: ignore[union-attr]
+        the_first_non_none_item = next(
+            (item for item in sequence_mixed_elements if item is not None), None
+        )
+        output.device = (
+            the_first_non_none_item.device
+            if the_first_non_none_item is not None
+            else None
+        )
         return output
     elif isinstance(onnx_tensor, (tuple, list)) and all(
         isinstance(node, torch.fx.Node) or node is None for node in onnx_tensor
@@ -310,6 +318,11 @@ def _fill_tensor_shape_type(
             onnxscript_value.name = f"{name}_{i}"
         else:
             onnxscript_value.name = name
+
+        # TODO: Remove this when there is no mismatch output shapes between device:
+        # https://github.com/pytorch/pytorch/blob/a44f8894fa6d973693aab44a3dda079a168b05c1/torch/_decomp/decompositions.py#L1451-L1457
+        # Set up device for the tensor
+        onnxscript_value.device = expected_value.device
 
 
 @_beartype.beartype
@@ -623,6 +636,7 @@ class FxOnnxInterpreter:
                 input_name=node.name,
                 shape=fake_tensor.shape,
                 dtype=fake_tensor.dtype,
+                device=fake_tensor.device,
             )
 
         elif fx_type_utils.is_torch_symbolic_type(fake_tensor):
@@ -630,6 +644,7 @@ class FxOnnxInterpreter:
                 input_name=node.name,
                 shape=torch.Size([]),
                 dtype=fx_type_utils.from_sym_value_to_torch_dtype(fake_tensor),
+                device=fake_tensor.device,
             )
         else:
             raise RuntimeError(
@@ -695,6 +710,7 @@ class FxOnnxInterpreter:
             onnx_kwargs=onnx_kwargs,
             diagnostic_context=self.diagnostic_context,
         )
+
         with onnxscript.evaluator.default_as(onnxscript_tracer):
             output: Union[  # type: ignore[no-redef]
                 onnxscript_graph_building.TorchScriptTensor,

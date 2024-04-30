@@ -9,6 +9,7 @@ from typing import Mapping, Tuple
 
 import onnx
 import onnx.inliner
+import onnx.shape_inference
 import pytorch_test_common
 import torch
 import transformers  # type: ignore[import]
@@ -865,6 +866,41 @@ class TestFxToOnnx(pytorch_test_common.ExportTestCase):
         input = torch.randn(2, 3)
         model = PrintModule()
         _ = torch.onnx.dynamo_export(model, input)
+
+    def test_native_batch_norm_cpu_is_not_supported_in_torchlib(self):
+        class BatchNorm2dModule(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.mod = torch.nn.BatchNorm2d(2)
+                self.ppp = torch.nn.Parameter(torch.Tensor([1]))
+
+            def forward(self, *args):
+                x = args[0] + self.ppp
+                res = self.mod(x, *args[1:])
+                return res
+
+        x = torch.ones(2, 2, 2, 2)
+        ep = torch.export.export(BatchNorm2dModule().eval(), args=(x,))
+        onnx_program = torch.onnx.dynamo_export(ep, x)
+        onnx.shape_inference.infer_shapes(
+            onnx_program.model_proto, check_type=True, strict_mode=True, data_prop=True
+        )
+        import pdb
+
+        pdb.set_trace()
+
+        # with self.assertRaises(torch.onnx.OnnxExporterError) as e:
+        #     torch.onnx.dynamo_export(ep, x)
+
+        # try:
+        #     torch.onnx.dynamo_export(ep, x)
+        # except torch.onnx.OnnxExporterError as e:
+        #     assert_has_diagnostics(
+        #         e.onnx_program.diagnostic_context,
+        #         diagnostics.rules.no_symbolic_function_for_call_function,
+        #         diagnostics.levels.ERROR,
+        #         expected_node="aten.mul.Tensor",
+        #     )
 
 
 if __name__ == "__main__":

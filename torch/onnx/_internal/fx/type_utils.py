@@ -114,6 +114,15 @@ def from_scalar_type_to_torch_dtype(scalar_type: type) -> Optional[torch.dtype]:
     return _SCALAR_TYPE_TO_TORCH_DTYPE.get(scalar_type)
 
 
+def get_onnx_function_required_device(function_name: str) -> torch.device | None:
+    return _DEVICE_SPECIFIC_ONNX_FUNCTION.get(function_name)
+
+
+_DEVICE_SPECIFIC_ONNX_FUNCTION: Dict[str, torch.device] = {
+    "aten__native_batch_norm_legit_functional": torch.device("cuda"),
+    "aten_native_batch_norm": torch.device("cuda"),
+}
+
 # NOTE: this is a mapping from torch dtype to a set of compatible onnx types
 # It's used in dispatcher to find the best match overload for the input dtypes
 _TORCH_DTYPE_TO_COMPATIBLE_ONNX_TYPE_STRINGS: Dict[
