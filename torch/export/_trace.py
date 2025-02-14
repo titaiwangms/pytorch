@@ -69,7 +69,12 @@ from torch._logging import dtrace_structured
 from torch._subclasses.fake_tensor import FakeTensorMode
 from torch._utils_internal import log_export_usage
 from torch.export._unlift import _check_input_constraints_pre_hook
-from torch.export.dynamic_shapes import _check_dynamic_shapes, _combine_args
+from torch.export.dynamic_shapes import (
+    _check_dynamic_shapes,
+    _combine_args,
+    _Dim,
+    _DimHint,
+)
 from torch.export.exported_program import OutputKind
 from torch.fx.experimental.proxy_tensor import (
     get_proxy_slot,
@@ -881,6 +886,123 @@ def _rewrite_dynamo_tensor_constants(
                 # value to the constants table.
                 spec.kind = InputKind.CONSTANT_TENSOR
                 constants[spec.target] = value  # type: ignore[arg-type]
+
+
+def _flatten_dynamic_shapes_with_dim_and_str(
+    dynamic_shapes: Union[dict[str, Optional[Any]], tuple[Any, ...], list[Any]],
+) -> tuple[list[Any], pytree.TreeSpec]:
+    # If it's a dict/list/tuple with torch.export._Dim, we consider it's an axis to dim mapping
+    def is_axes(x) -> bool:
+        return (
+            isinstance(x, dict)
+            and all(
+                isinstance(k, int)
+                and (v is None or isinstance(v, (_Dim, _DimHint, str, int)))
+                for k, v in x.items()
+            )
+        ) or (
+            isinstance(x, (list, tuple))
+            and all(v is None or isinstance(v, (_Dim, _DimHint, str, int)) for v in x)
+        )
+
+    return pytree.tree_flatten(dynamic_shapes, is_leaf=is_axes)
+
+
+def _add_custom_axis_names(
+    gm: torch.fx.GraphModule,
+    dynamic_shapes: Optional[Union[dict[Any, Any], tuple[Any], list[Any]]] = None,
+) -> None:
+    """
+    Adds custom axis names to the graph module.
+    """
+    # Skip this pass if there's no dynamic shapes
+    if not dynamic_shapes:
+        return
+    flat_dynamic_shapes, _ = _flatten_dynamic_shapes_with_dim_and_str(dynamic_shapes)
+    # Skip this pass if there's no custom axis names or no dynamic shapes
+    if not any(isinstance(x, (_Dim, str)) for x in flat_dynamic_shapes):
+        return
+    # TODO(titaiwang): Check if flat_dynamic_shapes length is equal to the number of
+    # placeholders in the graph module. Better error message!
+    placeholders = [node for node in gm.graph.nodes if node.op == "placeholder"]
+    assert len(placeholders) == len(
+        flat_dynamic_shapes
+    ), f"Expected {placeholders} placeholders, but got {flat_dynamic_shapes} dynamic shapes."
+
+    def _get_custom_axis_name(axis: Union[_Dim, str]) -> str:
+        """Get the custom axis name from a torch.export.Dim."""
+        if isinstance(axis, _Dim):
+            return axis.__name__
+        return axis
+
+    def _process_axis_mapping(
+        node: torch.fx.Node,
+        shape: Union[
+            dict[int, Union[str, _Dim, _DimHint]],
+            list[Union[str, _Dim, _DimHint]],
+            tuple[Union[str, _Dim, _DimHint]],
+        ],
+        axis_name_mapping: dict[str, str],
+    ) -> None:
+        """Helper function to process shape axes and update the axis mapping."""
+        for dim, axis in shape.items() if isinstance(shape, dict) else enumerate(shape):
+            node_shape = node.meta["val"].shape[dim]
+            if (
+                isinstance(node_shape, int)
+                or axis is None
+                or isinstance(axis, _DimHint)
+            ):
+                continue
+
+            custom_name = _get_custom_axis_name(axis)
+            node_key = str(node_shape.node)
+
+            if node_key in axis_name_mapping:
+                warnings.warn(
+                    f"# The axis name: {custom_name} will not be used, since it shares "
+                    f"the same shape constraints with another axis: {axis_name_mapping[node_key]}.",
+                    UserWarning,
+                    stacklevel=3,
+                )
+                continue
+
+            axis_name_mapping[node_key] = custom_name
+
+    # Create a mapping of node shape names to custom axis names
+    axis_name_mapping: dict[str, str] = {}
+    for node, shape in zip(placeholders, flat_dynamic_shapes):
+        _process_axis_mapping(node, shape, axis_name_mapping)
+
+    # NOTE: Mapping needs to be srted by length because the shape expression
+    # could have multiple ways to be expressed, for example,
+    # {"s1": sequence_length, "s11": "past_sequence_length", "s1 + s11": "masked_sequence_length"}
+    # We prefer the replacement starts from the longest match.
+    sorted_axis_name_mapping = dict(
+        sorted(axis_name_mapping.items(), key=lambda item: len(item[0]), reverse=True)
+    )
+
+    def _replace_names(shape_expr: str, rename_mapping: dict[str, str]) -> str:
+        """Replace all known names in a shape expression with new names."""
+        for old_name, new_name in rename_mapping.items():
+            shape_expr = re.sub(
+                rf"(?<!\w){re.escape(old_name)}(?!\w)", new_name, shape_expr
+            )
+        return shape_expr
+
+    # Map the custom axis names to the node shape names
+    for node in gm.graph.nodes:
+        if node.op == "output" or not isinstance(node.meta["val"], torch.Tensor):
+            continue
+        axis_names = []
+        for dim in node.meta["val"].shape:
+            if isinstance(dim, int):
+                axis_names.append(str(dim))
+            elif str(dim.node) in sorted_axis_name_mapping:
+                axis_names.append(sorted_axis_name_mapping[str(dim.node)])
+            else:
+                new_name = _replace_names(str(dim.node), sorted_axis_name_mapping)
+                axis_names.append(new_name)
+        node.meta["axis_names"] = axis_names
 
 
 def _move_non_persistent_buffers_to_tensor_constants(
@@ -1977,6 +2099,7 @@ def _export_for_training(
         forward_arg_names,
     )
 
+    _add_custom_axis_names(gm, dynamic_shapes)
     _verify_nn_module_stack(gm)
     _verify_stack_trace(gm)
     _verify_placeholder_names(gm, export_graph_signature)

@@ -721,7 +721,7 @@ def _check_dynamic_shapes(
                     check_same_bounds(dim)
                 elif dim is None:
                     _warn_on_None_dynamic_shape_dimension()
-                elif not (isinstance(dim, (int, _DimHint))):
+                elif not (isinstance(dim, (int, _DimHint, str))):
                     raise UserError(
                         UserErrorType.INVALID_INPUT,
                         f"Unexpected dimension mapped to index {i} in input tensor shape {shape} "
@@ -736,7 +736,7 @@ def _check_dynamic_shapes(
                     check_same_bounds(dim)
                 elif dim is None:
                     _warn_on_None_dynamic_shape_dimension()
-                elif not (isinstance(dim, (int, _DimHint))):
+                elif not (isinstance(dim, (int, _DimHint, str))):
                     raise UserError(
                         UserErrorType.INVALID_INPUT,
                         f"Unexpected dimension #{i} in input tensor shape {shape} "
@@ -931,6 +931,8 @@ def _process_dynamic_shapes(
                     elif dim == _DimHint.DYNAMIC:
                         torch._dynamo.mark_dynamic(tensor, i)
                     constraints.append(_RelaxedConstraint(id(tensor), i))
+                elif isinstance(dim, str):
+                    torch._dynamo.maybe_mark_dynamic(tensor, i)
                 elif dim is None:
                     torch._dynamo.mark_static(tensor, i)
         elif isinstance(shape, (tuple, list)):
@@ -947,6 +949,9 @@ def _process_dynamic_shapes(
                         torch._dynamo.mark_static(tensor, i)
                     elif dim == _DimHint.DYNAMIC:
                         torch._dynamo.mark_dynamic(tensor, i)
+                    constraints.append(_RelaxedConstraint(id(tensor), i))
+                elif isinstance(dim, str):
+                    torch._dynamo.maybe_mark_dynamic(tensor, i)
                     constraints.append(_RelaxedConstraint(id(tensor), i))
                 elif dim is None:
                     torch._dynamo.mark_static(tensor, i)
@@ -996,7 +1001,7 @@ def _get_dim_name_mapping(
             if isinstance(dim, _DerivedDim):
                 name_to_dim[dim.root.__name__] = dim.root  # type: ignore[attr-defined]
         else:
-            assert isinstance(dim, _DimHint)
+            assert isinstance(dim, (_DimHint, str))
     return name_to_dim
 
 
