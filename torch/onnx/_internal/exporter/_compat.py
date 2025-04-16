@@ -92,7 +92,6 @@ def export_compat(
                         kwargs,
                         dynamic_axes=dynamic_axes,
                         input_names=input_names,
-                        output_names=set(output_names or ()),
                     )
                 )
             except Exception as e:

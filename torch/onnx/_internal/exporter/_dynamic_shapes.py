@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import inspect
+import logging
 import warnings
 from typing import Any, TYPE_CHECKING
 
@@ -13,8 +14,68 @@ from torch.onnx._internal._lazy_import import onnxscript_ir as ir
 from torch.utils import _pytree
 
 
+logger = logging.getLogger(__name__)
+
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
+
+def _validate_dynamic_axes(
+    dynamic_axes: dict[str, dict[int, str] | list[int]],
+    input_names: Sequence[str],
+) -> dict[str, dict[int, str]]:
+    """Ensures dynamic axes argument is follows the expected format.
+
+    This function checks
+    - If the keys in dynamic_axes are valid input names (output names are not allowed)
+    - If the values are either a list of integers or a dictionary with integer keys and string values
+    - If the values are a list of integers, it converts them to a dictionary with automatically generated names
+    - If the values are a dictionary, it checks if the keys are integers and the values are strings
+
+    returns:
+    - A dictionary with the same keys as dynamic_axes, but with the values converted to a dictionary
+      with integer keys and string values.
+
+    """
+
+    # input_names could be []
+    valid_names = set(input_names)
+
+    # If dynamic axes are provided as a list rather than dictionary, they should
+    # first get converted to a dictionary in expected format. If desired axes names
+    # are not provided for dynamic axes, automatic names shall be generated for
+    # provided dynamic axes of specified input/output
+    valid_dynamic_axes: dict[str, dict[int, str]] = {}
+    for key, value in dynamic_axes.items():
+        if key not in valid_names:
+            logger.debug(
+                "Provided key %s for dynamic axes is not a valid input name", key
+            )
+            continue
+        if isinstance(value, list):
+            logger.debug(
+                "No names were found for specified dynamic axes of provided input. "
+                "Automatically generated names will be applied to each dynamic axes of input %s",
+                key,
+            )
+            value_dict: dict[int, str] = {}
+            for i, x in enumerate(value):
+                if not isinstance(x, int):
+                    raise ValueError(
+                        "The type of axis index is expected to be an integer"
+                    )
+                if x in value_dict:
+                    logger.debug(
+                        "Duplicate dynamic axis index %d was provided for input %s.",
+                        x,
+                        key,
+                    )
+                else:
+                    value_dict[x] = str(key) + "_dynamic_axes_" + str(i + 1)
+            valid_dynamic_axes[key] = value_dict
+        else:
+            valid_dynamic_axes[key] = value
+    return valid_dynamic_axes
 
 
 def from_dynamic_axes_to_dynamic_shapes(
@@ -23,7 +84,6 @@ def from_dynamic_axes_to_dynamic_shapes(
     kwargs: dict[str, Any] | None,
     *,
     dynamic_axes=None,
-    output_names: set[str],
     input_names: Sequence[str] | None = None,
 ) -> tuple[dict[str, Any | None] | None, tuple[Any, ...], dict[str, Any] | None]:
     """
@@ -50,27 +110,28 @@ def from_dynamic_axes_to_dynamic_shapes(
     if kwargs is None:
         kwargs = {}
 
+    # 2. Validate dynamic_axes and return the dynamic_axes in the expected format,
+    #    which is a dictionary with integer keys and string values.
+    dynamic_axes = _validate_dynamic_axes(dynamic_axes, input_names=input_names)
+
+    # TODO(titaiwang) Create the following corner cases:
+    # a. Input names for dynamo=True/False are not the same, so we need to handle this case.
+    # b. dynamic_shapes can be either a dict or a list, but convert dynamic_axes to a dict
+    #    seems impossible (tree and arg names). But convert it to a list, we need to insert
+    #    None for static shapes. So we need to handle this case.
+
     dynamic_shapes: dict[str, Any | None] = {}
     for input_name, axes in dynamic_axes.items():
         # NOTE: torch.export.Dim.AUTO does its best to infer the min and max values
         # from the model, but it's not guaranteed to be dynamic.
-        if input_name in output_names:
-            # output names are not needed for dynamic_shapes
-            continue
         if isinstance(axes, dict):
             if any(not isinstance(k, int) for k in axes.keys()):
                 raise ValueError(
-                    "The axis in dynamic_axes must be in the form of: dict[int, str] or list[int]."
+                    "The axis in dynamic_axes must be in the form of: dict[int, str]."
                 )
             dynamic_shapes[input_name] = {
                 k: torch.export.Dim.AUTO for k, _ in axes.items()
             }
-        elif isinstance(axes, list):
-            if any(not isinstance(k, int) for k in axes):
-                raise ValueError(
-                    "The axis in dynamic_axes must be in the form of: dict[int, str] or list[int]."
-                )
-            dynamic_shapes[input_name] = {k: torch.export.Dim.AUTO for k in axes}
         elif axes is None:
             dynamic_shapes[input_name] = None
         else:
@@ -261,9 +322,11 @@ def create_rename_mapping(
                 # the same shape constraints.
                 custom_name = _get_custom_axis_name(axis)
                 if input.shape[dim].value in rename_mapping:
-                    warnings.warn(
-                        f"# The axis name: {custom_name} will not be used, since it shares "
-                        f"the same shape constraints with another axis: {rename_mapping[input.shape[dim].value]}."
+                    logger.debug(
+                        "# The axis name: %s will not be used, since it shares "
+                        "the same shape constraints with another axis: %s.",
+                        custom_name,
+                        rename_mapping[input.shape[dim].value],
                     )
                     continue
                 rename_mapping[input.shape[dim].value] = custom_name

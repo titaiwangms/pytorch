@@ -357,7 +357,7 @@ class TestDynamicShapes(common_utils.TestCase):
         self.assertEqual(flatten_dynamic_shapes, expected_flattened)
 
     @common_utils.parametrize(
-        "model, args, kwargs, input_names, output_names, dynamic_axes, expected_dynamic_shapes",
+        "model, args, kwargs, input_names, dynamic_axes, expected_dynamic_shapes",
         [
             # llama-3.2-1B-Instruct (trimmed)
             (
@@ -380,13 +380,6 @@ class TestDynamicShapes(common_utils.TestCase):
                     "past_key_values.0.value",
                     "past_key_values.1.key",
                     "past_key_values.1.value",
-                ],
-                [
-                    "logits",
-                    "present.0.key",
-                    "present.0.value",
-                    "present.1.key",
-                    "present.1.value",
                 ],
                 {
                     "input_ids": {0: "batch_size", 1: "sequence_length"},
@@ -474,7 +467,6 @@ class TestDynamicShapes(common_utils.TestCase):
         args,
         kwargs,
         input_names,
-        output_names,
         dynamic_axes,
         expected_dynamic_shapes,
     ):
@@ -483,7 +475,6 @@ class TestDynamicShapes(common_utils.TestCase):
             args,
             kwargs,
             input_names=input_names,
-            output_names=output_names,
             dynamic_axes=dynamic_axes,
         )
 
